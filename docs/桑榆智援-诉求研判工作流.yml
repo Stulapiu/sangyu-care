@@ -1,0 +1,476 @@
+app:
+  description: 把社区独居老人的一句方言口语，研判成一张可以直接派工的标准工单。
+  icon: 🌿
+  icon_background: '#E1F0E4'
+  mode: workflow
+  name: 桑榆智援 · 诉求研判
+  use_icon_as_answer_icon: false
+dependencies: []
+kind: app
+version: 0.4.0
+workflow:
+  conversation_variables: []
+  environment_variables: []
+  features:
+    file_upload:
+      allowed_file_extensions:
+      - .JPG
+      - .JPEG
+      - .PNG
+      - .GIF
+      - .WEBP
+      - .SVG
+      allowed_file_types:
+      - image
+      allowed_file_upload_methods:
+      - local_file
+      - remote_url
+      enabled: false
+      fileUploadConfig:
+        audio_file_size_limit: 50
+        batch_count_limit: 5
+        file_size_limit: 15
+        image_file_size_limit: 10
+        video_file_size_limit: 100
+        workflow_file_upload_limit: 10
+      image:
+        enabled: false
+        number_limits: 3
+        transfer_methods:
+        - local_file
+        - remote_url
+      number_limits: 3
+    opening_statement: ''
+    retriever_resource:
+      enabled: false
+    sensitive_word_avoidance:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    suggested_questions: []
+    suggested_questions_after_answer:
+      enabled: false
+    text_to_speech:
+      enabled: false
+      language: ''
+      voice: ''
+  graph:
+    edges:
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: start
+        targetType: code
+      id: 1800000000001-source-1800000000002-target
+      source: '1800000000001'
+      sourceHandle: source
+      target: '1800000000002'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: http-request
+      id: 1800000000002-source-1800000000003-target
+      source: '1800000000002'
+      sourceHandle: source
+      target: '1800000000003'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: http-request
+        targetType: code
+      id: 1800000000003-source-1800000000004-target
+      source: '1800000000003'
+      sourceHandle: source
+      target: '1800000000004'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    - data:
+        isInIteration: false
+        isInLoop: false
+        sourceType: code
+        targetType: end
+      id: 1800000000004-source-1800000000005-target
+      source: '1800000000004'
+      sourceHandle: source
+      target: '1800000000005'
+      targetHandle: target
+      type: custom
+      zIndex: 0
+    nodes:
+    - data:
+        desc: ''
+        selected: false
+        title: Start
+        type: start
+        variables:
+        - label: 老人原话
+          max_length: 2000
+          options: []
+          required: true
+          type: paragraph
+          variable: text
+        - label: 老人档案
+          max_length: 2000
+          options: []
+          required: false
+          type: paragraph
+          variable: profile
+      height: 90
+      id: '1800000000001'
+      position:
+        x: 80
+        y: 300
+      positionAbsolute:
+        x: 80
+        y: 300
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+    - data:
+        desc: ''
+        selected: false
+        title: 组装研判请求
+        type: code
+        code: |
+          def main(text: str, profile: str) -> dict:
+              import json
+
+              system_prompt = """你是社区养老服务的诉求研判助手，服务对象是郑州某社区的高龄独居老人。
+          社区网格员每天要处理几十条诉求，你的任务是把老人一句口语化的话，变成一张可以直接派工的标准工单。
+
+          【分类】只能从下面八类里选一个，不要自创：
+          助餐、家政保洁、家电维修、水电故障、健康咨询、政策咨询、康复护理、其他
+
+          【紧急等级】只能从下面三档里选一个：
+          紧急 —— 有人身安全风险，或影响基本生存。例如：胸闷气短、摔倒起不来、煤气泄漏、漏电、水管爆裂淹了屋子、断水断电断气。
+          较急 —— 不处理当天就过不去，但不危及生命。例如：冰箱不制冷导致食物变质、马桶堵了、热水器坏了。
+          一般 —— 可以排期处理。例如：想找人打扫卫生、咨询政策、理发。
+
+          【判断依据】
+          1. 老人措辞往往含糊，要结合常识推断真实需求。比如"想吃口软和的饭"是助餐，"屋里冷得很"可能是暖气故障。
+          2. 老人如果说"没事""不用麻烦"，但同时提到身体不适，按较急以上处理。
+          3. 涉及独居、慢病、行动不便的老人，等级上调一档。
+          4. 只依据老人说的话和档案，不要编造没提到的信息。
+
+          【有效性初筛】先判断这句话是不是一条真实诉求，再做分类：
+          无效 —— 整句只有寒暄、试音、口头语、测试、误触，没有任何可办理的事项。
+                  例如："喂""喂喂""你好""在吗""测试""试试""啊啊啊""嗯嗯""打错了""按错了""没事了"。
+          有效 —— 只要提到任何一件具体的事、身体感受、需要人帮忙的地方，都算有效。
+                  宁可判为有效：老人表达含糊是常态，不要因为句子短就判无效。
+                  例如："饭"（想吃东西）算有效；"疼"（身体不适）算有效。
+          只看这句话本身，不要因为档案里老人年纪大就默认有效或无效。
+
+          【输出】只输出一个 JSON 对象：
+          {
+            "valid": true 或 false,
+            "invalid_reason": "判为无效时的简短理由，12 字以内；有效时留空字符串",
+            "type": "分类",
+            "urgency": "等级",
+            "title": "不超过 12 个字的事项概括",
+            "summary": "一句话说清楚要办什么，不超过 40 字",
+            "suggest": "给社区的处置建议，不超过 40 字",
+            "reply": "用老人听得懂的话回执，不超过 50 字，不要用专业词",
+            "missing": ["还需要补充的信息"],
+            "tags": ["从老人档案里看到的标签，如独居、慢病、行动不便"]
+          }
+          valid 为 false 时：type 填"其他"、urgency 填"一般"，reply 用一句话自然回应，不要派工。"""
+
+              user_content = "老人档案：\n" + (profile or "（无档案信息）") + "\n\n老人原话：\n" + (text or "")
+
+              payload = {
+                  "model": "deepseek-chat",
+                  "messages": [
+                      {"role": "system", "content": system_prompt},
+                      {"role": "user", "content": user_content}
+                  ],
+                  "temperature": 0.2,
+                  "max_tokens": 600,
+                  "response_format": {"type": "json_object"}
+              }
+              return {"payload": json.dumps(payload, ensure_ascii=False), "prompt_preview": user_content[:200]}
+        code_language: python3
+        outputs:
+          payload:
+            children: null
+            type: string
+          prompt_preview:
+            children: null
+            type: string
+        variables:
+        - value_selector:
+          - '1800000000001'
+          - text
+          variable: text
+        - value_selector:
+          - '1800000000001'
+          - profile
+          variable: profile
+      height: 140
+      id: '1800000000002'
+      position:
+        x: 384
+        y: 300
+      positionAbsolute:
+        x: 384
+        y: 300
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+    - data:
+        desc: ''
+        selected: false
+        title: 调用大模型
+        type: http-request
+        method: post
+        url: https://api.deepseek.com/chat/completions
+        authorization:
+          type: api-key
+          config:
+            type: bearer
+            api_key: sk-REPLACE_WITH_YOUR_DEEPSEEK_KEY
+        headers: 'Content-Type: application/json'
+        params: ''
+        body:
+          type: json
+          data: '{{#1800000000002.payload#}}'
+        timeout:
+          connect: 10
+          read: 60
+          write: 30
+        retry_config:
+          enabled: true
+          max_retries: 2
+          retry_interval: 1000
+          exponential_backoff:
+            enabled: false
+            multiplier: 2
+            max_interval: 10000
+        error_strategy: default-value
+        default_value:
+        - key: body
+          type: string
+          value: ''
+      height: 120
+      id: '1800000000003'
+      position:
+        x: 688
+        y: 300
+      positionAbsolute:
+        x: 688
+        y: 300
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+    - data:
+        desc: ''
+        selected: false
+        title: 规整与兜底
+        type: code
+        code: |
+          def main(body: str, text: str) -> dict:
+              import json
+
+              TYPES = ["助餐", "家政保洁", "家电维修", "水电故障", "健康咨询", "政策咨询", "康复护理", "其他"]
+
+              s = (text or "").strip()
+              raw = ""
+
+              # 从大模型响应里取出 content
+              try:
+                  resp = json.loads(body or "{}")
+                  raw = resp["choices"][0]["message"]["content"] or ""
+              except Exception:
+                  raw = ""
+
+              # content 本身应当是一段 JSON
+              obj = {}
+              i = raw.find("{")
+              j = raw.rfind("}")
+              if i >= 0 and j > i:
+                  try:
+                      obj = json.loads(raw[i:j + 1])
+                  except Exception:
+                      obj = {}
+              if not isinstance(obj, dict):
+                  obj = {}
+
+              rules = [
+                  ("水电故障", ["漏水", "水管", "下水道", "堵了", "跳闸", "停电", "没电", "灯不亮", "灯泡",
+                              "插座", "电线", "电闸", "暖气", "不热", "煤气", "燃气", "水表", "电表", "水压"]),
+                  ("家电维修", ["冰箱", "电视", "洗衣机", "空调", "热水器", "微波炉", "电饭锅", "电扇",
+                              "遥控器", "不制冷", "打不着火", "坏了"]),
+                  ("健康咨询", ["头晕", "血压", "血糖", "胸闷", "喘不上气", "心慌", "吃药", "拿药", "医院",
+                              "看病", "不舒服", "疼", "失眠"]),
+                  ("康复护理", ["护理", "按摩", "康复", "翻身", "洗澡", "助浴", "卧床", "照料"]),
+                  ("政策咨询", ["补贴", "政策", "报销", "养老金", "保险", "申请", "手续", "材料", "证明"]),
+                  ("家政保洁", ["打扫", "保洁", "收拾", "擦", "扫地", "拖地", "理发", "剪头", "洗衣"]),
+                  ("助餐", ["吃饭", "送餐", "订餐", "午饭", "早饭", "晚饭", "饭菜", "软和", "嚼不动", "饿"])
+              ]
+
+              suggest_map = {
+                  "助餐": "当天联系助餐点安排送餐",
+                  "家政保洁": "排期上门保洁",
+                  "家电维修": "安排维修师傅上门检查",
+                  "水电故障": "联系物业与水电工上门排查",
+                  "健康咨询": "转社区卫生服务中心回访",
+                  "政策咨询": "由网格员当面讲解办理流程",
+                  "康复护理": "联系护理员制定照护方案",
+                  "其他": "先由网格员电话核实"
+              }
+
+              def pick_type(x):
+                  for name, kws in rules:
+                      for k in kws:
+                          if k in x:
+                              return name
+                  return "其他"
+
+              def pick_urgency(x):
+                  urgent = ["胸闷", "喘不上气", "摔", "起不来", "晕", "煤气", "漏电", "失火", "着火了",
+                            "救命", "不行了", "疼得厉害", "流血", "触电"]
+                  mid = ["漏水", "淹", "跳闸", "停电", "不制冷", "堵", "打不开", "坏了", "不热"]
+                  for k in urgent:
+                      if k in x:
+                          return "紧急"
+                  for k in mid:
+                      if k in x:
+                          return "较急"
+                  return "一般"
+
+              t = obj.get("type")
+              if t not in TYPES:
+                  t = pick_type(s)
+
+              u = obj.get("urgency")
+              if u not in ["紧急", "较急", "一般"]:
+                  u = pick_urgency(s)
+
+              title = obj.get("title") or (s[:12] if s else "社区诉求")
+              summary = obj.get("summary") or (s[:40] if s else "待网格员核实")
+              suggest = obj.get("suggest") or suggest_map.get(t, "先由网格员电话核实")
+              reply = obj.get("reply") or "您的事已经报给社区了，工作人员会尽快联系您。"
+
+              missing = obj.get("missing")
+              if not isinstance(missing, list):
+                  missing = []
+              tags = obj.get("tags")
+              if not isinstance(tags, list):
+                  tags = []
+
+              # 有效性：优先采信模型结论；模型没给就按本地词表兜底，保证断网也有结果
+              import re as _re
+
+              _v = obj.get("valid")
+              if isinstance(_v, str):
+                  _v = _v.strip().lower() in ("true", "1", "yes", "有效")
+              if not isinstance(_v, bool):
+                  _v = None
+
+              _reason = str(obj.get("invalid_reason") or "").strip()[:20]
+
+              _clean = _re.sub(r"[\s，。,.、！!？?~～…·—\-_]", "", s)
+              _junk = ["测试", "试试", "试一下", "喂", "在吗", "在不在", "你好", "您好",
+                       "打错", "按错", "点错", "误触", "没事", "算了", "啊啊", "嗯嗯", "哦哦"]
+
+              # 纯语气词，如「啊啊啊」「嗯嗯」「哈哈哈哈」
+              _interj = set("啊嗯哦哈呃唉喂呀哎奥欸")
+              _all_interj = bool(_clean) and all(c in _interj for c in _clean)
+
+              if _v is None:
+                  if (not _clean) or _clean.isdigit() or (_clean in _junk) or _all_interj:
+                      _v = False
+                      _reason = _reason or "整句为寒暄或误触"
+                  elif len(_clean) <= 2 and not any(c in _clean for c in "饿饭餐疼药水电冷热病帮送修"):
+                      _v = False
+                      _reason = _reason or "内容过短，无可识别诉求"
+                  else:
+                      _v = True
+
+              if not _v and not _reason:
+                  _reason = "非有效诉求"
+              if _v:
+                  _reason = ""
+
+              out = {
+                  "valid": _v,
+                  "invalid_reason": _reason,
+                  "type": t,
+                  "urgency": u,
+                  "title": str(title)[:20],
+                  "summary": str(summary)[:60],
+                  "suggest": str(suggest)[:60],
+                  "reply": str(reply)[:80],
+                  "missing": [str(x) for x in missing[:4]],
+                  "tags": [str(x) for x in tags[:4]],
+                  "by": "llm" if obj.get("type") else "rule"
+              }
+              return {"result": json.dumps(out, ensure_ascii=False)}
+        code_language: python3
+        outputs:
+          result:
+            children: null
+            type: string
+        variables:
+        - value_selector:
+          - '1800000000003'
+          - body
+          variable: body
+        - value_selector:
+          - '1800000000001'
+          - text
+          variable: text
+      height: 140
+      id: '1800000000004'
+      position:
+        x: 992
+        y: 300
+      positionAbsolute:
+        x: 992
+        y: 300
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+    - data:
+        desc: ''
+        selected: false
+        title: End
+        type: end
+        outputs:
+        - value_selector:
+          - '1800000000004'
+          - result
+          value_type: string
+          variable: result
+      height: 90
+      id: '1800000000005'
+      position:
+        x: 1296
+        y: 300
+      positionAbsolute:
+        x: 1296
+        y: 300
+      selected: false
+      sourcePosition: right
+      targetPosition: left
+      type: custom
+      width: 244
+    viewport:
+      x: 0
+      y: 0
+      zoom: 0.85
