@@ -31,7 +31,7 @@
     appSecret: '',             // 讯飞 APISecret（服务端配置，切勿放前端）
     dialect: 'zhongyuan',      // 方言参数：中原官话
     language: 'zh-CN',
-    handwritingEndpoint: '',   // 手写识别接口地址（预留）
+    handwritingEndpoint: 'http://localhost:8124/hw',   // 本机中继 → DeepSeek 视觉识别
     handwritingKey: '',
     ttsEnabled: true,
     ttsRate: 0.95
@@ -87,6 +87,41 @@
   }
 
   function relayState() { return relayOk; }
+
+  /* ---------------- 麦克风环境诊断 ----------------
+     三种情况下按钮点了没反应，原因各不相同，必须分别说清楚：
+       1) file:// 打开 → 浏览器直接不给 mediaDevices（最常见的坑）
+       2) 没起中继   → 以前会静默走演示，看起来像「麦克风坏了」
+       3) 权限被拒 / 设备被占用
+     ---------------------------------------------------- */
+  const MIC_INSECURE = '当前是本地文件打开，浏览器不允许用麦克风；请用 http://localhost:8123 或线上 https 地址打开';
+
+  function micEnv() {
+    const secure = !!global.isSecureContext;
+    const hasGUM = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+    const SR = global.SpeechRecognition || global.webkitSpeechRecognition;
+    return {
+      secure: secure,
+      hasGUM: hasGUM,
+      supported: secure && hasGUM,
+      browserASR: !!(secure && SR),      // 浏览器原生识别（Edge/Chrome），不需要中继
+      insecure: !secure
+    };
+  }
+
+  function toMicError(err) {
+    const n = (err && err.name) || '';
+    const env = micEnv();
+    if (env.insecure) return new Error(MIC_INSECURE);
+    if (n === 'NotAllowedError' || n === 'PermissionDeniedError' || n === 'not-allowed')
+      return new Error('麦克风权限被拒绝了，点地址栏左边的锁形图标允许麦克风后重试');
+    if (n === 'NotFoundError' || n === 'DevicesNotFoundError' || n === 'audio-capture')
+      return new Error('没有检测到麦克风，检查一下设备有没有插好');
+    if (n === 'NotReadableError' || n === 'TrackStartError')
+      return new Error('麦克风被别的程序占用了（微信、会议软件之类），关掉再试');
+    return new Error((err && err.message) || '麦克风没启动起来');
+  }
+
   function isHandwritingConfigured() {
     const c = loadConfig();
     return !!(c.handwritingEndpoint && c.handwritingKey);
@@ -124,6 +159,14 @@
   }
 
   /* ---------------- 真实 ASR 调用 ---------------- */
+  function withTimeout(promise, ms, msg) {
+    return new Promise((resolve, reject) => {
+      const t = setTimeout(() => reject(new Error(msg)), ms);
+      promise.then(v => { clearTimeout(t); resolve(v); },
+                   e => { clearTimeout(t); reject(e); });
+    });
+  }
+
   async function requestASR(blob) {
     const cfg = loadConfig();
     if (!cfg.endpoint) throw new Error('未配置语音识别接口');
@@ -136,7 +179,16 @@
     const headers = {};
     if (cfg.apiKey) headers['Authorization'] = 'Bearer ' + cfg.apiKey;
 
-    const res = await fetch(cfg.endpoint, { method: 'POST', headers, body: fd });
+    let res;
+    try {
+      res = await withTimeout(
+        fetch(cfg.endpoint, { method: 'POST', headers, body: fd }),
+        25000,
+        '识别服务 25 秒没回应，看看 asr-relay 窗口是不是报错了');
+    } catch (e) {
+      if (e && e.message && e.message.indexOf('没回应') >= 0) throw e;
+      throw new Error('连不上本机识别服务（' + (e.message || '网络错误') + '），确认 asr-relay 已启动');
+    }
     let data = null;
     try { data = await res.json(); } catch (e) { data = null; }
 
@@ -179,32 +231,90 @@
       if (audioCtx) { try { audioCtx.close(); } catch (e) {} audioCtx = null; }
     }
 
-    const useReal = realMode();
+    /* ---- 音量条：拿到麦克风才画，拿不到也不影响识别 ---- */
+    let meterStream = null, meterOwned = false;
+    function startMeter(existing) {
+      if (!existing && !micEnv().supported) return Promise.resolve(false);
+      const p = existing ? Promise.resolve(existing) : navigator.mediaDevices.getUserMedia({ audio: true });
+      return p.then(s => {
+        if (!existing) { meterStream = s; meterOwned = true; }
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const src = audioCtx.createMediaStreamSource(s);
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 512;
+        src.connect(analyser);
+        const buf = new Uint8Array(analyser.frequencyBinCount);
+        const loop = () => {
+          if (stopped) return;
+          analyser.getByteFrequencyData(buf);
+          let sum = 0;
+          for (let i = 0; i < buf.length; i++) sum += buf[i];
+          o.onLevel && o.onLevel(Math.min(1, sum / buf.length / 90));
+          rafId = requestAnimationFrame(loop);
+        };
+        loop();
+        return true;
+      }).catch(() => false);
+    }
+    function releaseMeter() {
+      if (meterOwned && meterStream) {
+        try { meterStream.getTracks().forEach(t => t.stop()); } catch (e) {}
+      }
+      meterStream = null; meterOwned = false;
+    }
 
-    if (useReal) {
-      // —— 真实链路 ——
-      startRecording().then(() => {
-        // 音量回调
-        try {
-          audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-          const src = audioCtx.createMediaStreamSource(stream);
-          analyser = audioCtx.createAnalyser();
-          analyser.fftSize = 512;
-          src.connect(analyser);
-          const buf = new Uint8Array(analyser.frequencyBinCount);
-          const loop = () => {
-            if (stopped) return;
-            analyser.getByteFrequencyData(buf);
-            let sum = 0;
-            for (let i = 0; i < buf.length; i++) sum += buf[i];
-            o.onLevel && o.onLevel(Math.min(1, sum / buf.length / 90));
-            rafId = requestAnimationFrame(loop);
-          };
-          loop();
-        } catch (e) {}
-      }).catch(err => {
-        o.onError && o.onError(err);
+    /* ---- 浏览器原生识别：中继没起时的真实兜底（Edge / Chrome 自带） ---- */
+    let recog = null, brFinal = '', brInterim = '';
+    function startBrowserASR() {
+      const SR = global.SpeechRecognition || global.webkitSpeechRecognition;
+      try { recog = new SR(); } catch (e) { o.onError && o.onError(toMicError(e)); return; }
+      recog.lang = cfg.language || 'zh-CN';
+      recog.continuous = true;
+      recog.interimResults = true;
+      recog.maxAlternatives = 1;
+      recog.onresult = ev => {
+        brInterim = '';
+        for (let i = ev.resultIndex; i < ev.results.length; i++) {
+          const r = ev.results[i];
+          const t = (r[0] && r[0].transcript) || '';
+          if (r.isFinal) brFinal += t; else brInterim += t;
+        }
+        o.onPartial && o.onPartial((brFinal + brInterim).slice(0, 200));
+      };
+      recog.onerror = ev => {
+        const code = (ev && ev.error) || '';
+        if (code === 'no-speech' || code === 'aborted') return;
+        if (code === 'network' || code === 'service-not-allowed') {
+          o.onError && o.onError(new Error('这台机器连不上在线语音识别，换 Chrome/Edge 或启动本地识别服务再试'));
+          return;
+        }
+        o.onError && o.onError(toMicError({ name: code }));
+      };
+      recog.onend = () => {
+        // 浏览器因静音自己截断：已经有字就当用户说完了
+        if (!stopped && (brFinal + brInterim).trim()) stop();
+      };
+      try { recog.start(); } catch (e) { o.onError && o.onError(toMicError(e)); }
+      startMeter();
+    }
+
+    /* ---- 选路：中继 > 浏览器原生识别 > 演示 ---- */
+    const env = micEnv();
+    let mode = 'mock';
+    if (cfg.provider !== 'mock') {
+      if (realMode()) mode = 'relay';
+      else if (env.browserASR) mode = 'browser';
+    }
+
+    if (mode === 'relay') {
+      startRecording().then(() => startMeter(stream)).catch(err => {
+        o.onError && o.onError(toMicError(err));
       });
+    } else if (mode === 'browser') {
+      startBrowserASR();
+    } else if (env.insecure) {
+      // 双击 html 用 file:// 打开时，浏览器根本不给麦克风，必须说清楚
+      o.onError && o.onError(new Error(MIC_INSECURE));
     } else {
       // —— 原型演示：不占用麦克风，仅模拟声压 ——
       const tick = () => {
@@ -215,59 +325,112 @@
       rafId = requestAnimationFrame(tick);
     }
 
-    return {
-      stop() {
-        if (stopped) return;
-        stopped = true;
-        cleanup();
+    function stop() {
+      if (stopped) return;
+      stopped = true;
 
-        if (useReal) {
-          stopRecording().then(async blob => {
-            if (!blob) { o.onError && o.onError(new Error('未采集到音频')); return; }
-            try {
-              const text = await requestASR(blob);
-              o.onFinal && o.onFinal(text, { real: true });
-            } catch (err) {
-              o.onError && o.onError(err);
-            }
-          });
-          return;
-        }
-
-        // 模拟：逐字吐字，营造真实识别过程
-        const full = nextSample();
-        let i = 0;
-        const step = () => {
-          i += Math.max(1, Math.round(full.length / 14));
-          o.onPartial && o.onPartial(full.slice(0, Math.min(i, full.length)));
-          if (i < full.length) timers.push(setTimeout(step, 85));
-          else o.onFinal && o.onFinal(full, { real: false });
-        };
-        timers.push(setTimeout(step, 220));
+      if (mode === 'relay') {
+        withTimeout(stopRecording(), 6000, '录音没停下来').then(async blob => {
+          cleanup(); releaseMeter();
+          if (!blob || !blob.size) {
+            o.onError && o.onError(new Error('这次没采到声音，说慢一点、多说两秒再点停止'));
+            return;
+          }
+          if (blob.size < 1200) {
+            o.onError && o.onError(new Error('说话时间太短了，多说两句再点停止'));
+            return;
+          }
+          try {
+            const text = await requestASR(blob);
+            o.onFinal && o.onFinal(text, { real: true, engine: 'relay' });
+          } catch (err) {
+            const m = (err && err.message) || '';
+            o.onError && o.onError(new Error(/连不上|没回应/.test(m) ? m : '识别服务出错了：' + m));
+          }
+        }).catch(err => {
+          cleanup(); releaseMeter();
+          o.onError && o.onError(new Error(err.message || '录音失败'));
+        });
+        return;
       }
-    };
+
+      if (mode === 'browser') {
+        try { recog && recog.stop(); } catch (e) {}
+        // 停止后浏览器往往还要一会儿才吐出最后一段结果，等 1.3 秒再判断，
+        // 否则用户刚说完就点停止，会被误判成「没听到」。
+        const finish = () => {
+          cleanup(); releaseMeter();
+          const text = (brFinal + brInterim).trim();
+          if (text) o.onFinal && o.onFinal(text, { real: true, engine: 'browser' });
+          else o.onError && o.onError(new Error('没听到声音，靠近一点再说一次'));
+        };
+        timers.push(setTimeout(finish, 1300));
+        return;
+      }
+
+      cleanup(); releaseMeter();
+      // 模拟：逐字吐字，营造真实识别过程
+      const full = nextSample();
+      let i = 0;
+      const step = () => {
+        i += Math.max(1, Math.round(full.length / 14));
+        o.onPartial && o.onPartial(full.slice(0, Math.min(i, full.length)));
+        if (i < full.length) timers.push(setTimeout(step, 85));
+        else o.onFinal && o.onFinal(full, { real: false });
+      };
+      timers.push(setTimeout(step, 220));
+    }
+
+    return { stop, mode: function () { return mode; } };
   }
 
-  /* ---------------- 手写识别 ---------------- */
+  /* ---------------- 手写识别 ----------------
+     链路：canvas 待 base64 → 本机中继 /hw → DeepSeek 视觉模型 → 文字
+     密钥放在 asr-relay/config.json，不进前端。
+     ---------------------------------------------------- */
+  function pageIsLocal() {
+    try {
+      const h = location.hostname;
+      if (location.protocol === 'file:') return true;
+      return h === 'localhost' || h === '127.0.0.1' || h === '[::1]'
+        || /^10\./.test(h) || /^192\.168\./.test(h) || /^172\.(1[6-9]|2\d|3[01])\./.test(h);
+    } catch (e) { return false; }
+  }
+  function endpointIsLocal(ep) {
+    try {
+      const h = new URL(ep, location.href).hostname;
+      return h === 'localhost' || h === '127.0.0.1' || h === '[::1]';
+    } catch (e) { return false; }
+  }
+
   async function recognizeHandwriting(dataUrl) {
     const cfg = loadConfig();
-    if (cfg.handwritingEndpoint && cfg.handwritingKey) {
-      const blob = await (await fetch(dataUrl)).blob();
-      const fd = new FormData();
-      fd.append('image', blob, 'handwriting.png');
-      const res = await fetch(cfg.handwritingEndpoint, {
-        method: 'POST',
-        headers: { 'Authorization': 'Bearer ' + cfg.handwritingKey },
-        body: fd
-      });
-      if (!res.ok) throw new Error('手写识别服务返回 ' + res.status);
-      const data = await res.json();
-      return { text: data.text || '', simulated: false };
-    }
-    // 原型演示：返回一条示意结果
-    await new Promise(r => setTimeout(r, 900));
+    const ep = cfg.handwritingEndpoint;
     const pool = ['家里水管漏水了', '需要送一份午饭', '灯泡坏了看不见', '想申请高龄补贴'];
-    return { text: pool[Math.floor(Math.random() * pool.length)], simulated: true };
+    const simulate = reason => ({ text: pool[Math.floor(Math.random() * pool.length)], simulated: true, error: reason });
+
+    // 本地中继只在本机/局域网页面里尝试，避免线上站点每次都刷失败日志
+    if (ep && (!endpointIsLocal(ep) || pageIsLocal())) {
+      try {
+        const blob = await (await fetch(dataUrl)).blob();
+        const fd = new FormData();
+        fd.append('image', blob, 'handwriting.png');
+        const headers = {};
+        if (cfg.handwritingKey) headers['Authorization'] = 'Bearer ' + cfg.handwritingKey;
+        const res = await fetch(ep, { method: 'POST', headers, body: fd });
+        const data = await res.json().catch(() => null);
+        const text = ((data && data.text) || '').trim();
+        if (res.ok && data && data.ok !== false && text) {
+          return { text: text, simulated: false, engine: (data && data.engine) || 'deepseek' };
+        }
+        return simulate((data && data.error) || ('识别服务返回 ' + res.status));
+      } catch (e) {
+        return simulate('连不上本机识别服务（' + (e.message || '网络错误') + '）');
+      }
+    }
+
+    await new Promise(r => setTimeout(r, 900));
+    return simulate(ep ? '线上环境未连接本机识别服务' : '未配置手写识别服务');
   }
 
   /* ---------------- 语音播报 ---------------- */
@@ -306,9 +469,10 @@
 
   global.Speech = {
     DEFAULTS, loadConfig, saveConfig, isConfigured, isHandwritingConfigured,
-    probe, realMode, relayState,
+    probe, realMode, relayState, micEnv, toMicError, pageIsLocal,
     listen, recognizeHandwriting, speak, stopSpeak,
     supportsMic: !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia),
+    supportsBrowserASR: !!(global.SpeechRecognition || global.webkitSpeechRecognition),
     supportsTTS: !!global.speechSynthesis
   };
 })(window);
