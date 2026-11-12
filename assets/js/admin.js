@@ -390,10 +390,13 @@
       '<button class="btn btn--ghost btn--sm" id="urgToggle" style="' + (f.urgentOnly ? 'border-color:var(--neg);color:var(--neg);background:var(--neg-bg)' : '') + '">只看紧急</button>' +
       '<button class="btn btn--ghost btn--sm" id="doneToggle" style="' + (f.hideDone && f.status !== '已完成' ? '' : 'border-color:var(--amber);color:#8a6420;background:#FBF3DF') + '">' +
       (f.hideDone ? '显示完结' : '隐藏完结') + '</button>' +
-      (s.suspect
-        ? '<button class="btn btn--ghost btn--sm" id="susToggle" style="' + (f.suspectOnly ? 'border-color:var(--neg);color:var(--neg);background:var(--neg-bg)' : '') + '">' +
-          I('shield', 13) + ' 疑似无效 ' + s.suspect + '</button>'
-        : '') +
+      // 疑似无效是独立分类，按钮常驻：以前按 s.suspect>0 才显示，
+      // 结果种子数据里没有误触工单 → 整类功能在页面上"消失"，演示时看着像没做
+      '<button class="btn btn--ghost btn--sm" id="susToggle" title="智能体初筛出的疑似误触 / 非诉求内容" style="' +
+      (f.suspectOnly
+        ? 'border-color:var(--neg);color:var(--neg);background:var(--neg-bg)'
+        : (s.suspect ? '' : 'opacity:.55')) + '">' +
+      I('shield', 13) + ' 疑似无效 ' + s.suspect + '</button>' +
       '<div class="grow"></div>' +
       '<div class="search"><svg viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="6.4" stroke="currentColor" stroke-width="1.7"/><path d="M16 16l4 4" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></svg>' +
       '<input class="input" id="inboxQ" placeholder="搜内容、姓名、工单号" value="' + esc(f.q) + '"></div>' +
@@ -427,7 +430,9 @@
           '<div class="who">' + g.elderName + '<small>' + g.building + ' ' + g.unit + '</small></div>' +
           '<div><span class="tag" style="background:' + TYPE_COLOR[g.type] + '14;color:' + TYPE_COLOR[g.type] + ';border-color:' + TYPE_COLOR[g.type] + '30">' + g.type + '</span></div>' +
           '<div><span class="tag tag--' + (SY.SOURCE_TONE[t.source] || '') + '">' + t.source + '</span></div>' +
-          '<div><span class="tag tag--' + SY.STATUS[g.status].tone + '">' + g.status + '</span></div>' +
+          // 疑似无效的工单本来就还没进待办，状态显示「待接单」会让人误会，改叫「待确认」
+          '<div><span class="tag tag--' + (t.triage === 'suspect' && g.status === '待接单' ? 'amber' : SY.STATUS[g.status].tone) + '">' +
+          (t.triage === 'suspect' && g.status === '待接单' ? '待确认' : g.status) + '</span></div>' +
           '<div class="tm">' + SY.fromNow(g.latest.createdAt) + '</div>' +
           '</div>';
       }).join('')
@@ -523,7 +528,8 @@
       '<div style="flex:1;min-width:0"><div class="t">' + t.type + ' · ' + t.elderName + '</div>' +
       '<div class="m">' + t.id + ' · ' + SY.fmtTime(t.createdAt, true) + '</div>' +
       '<div style="display:flex;gap:6px;margin-top:9px;flex-wrap:wrap">' +
-      '<span class="tag tag--' + SY.STATUS[t.status].tone + '">' + t.status + '</span>' +
+      '<span class="tag tag--' + (suspect && t.status === '待接单' ? 'amber' : SY.STATUS[t.status].tone) + '">' +
+      (suspect && t.status === '待接单' ? '待确认' : t.status) + '</span>' +
       '<span class="tag tag--' + (SY.SOURCE_TONE[t.source] || '') + '">' + t.source + '上报</span>' +
       '<span class="tag tag--' + (URG_TONE[t.urgency] || '') + '">' + (t.urgency || '一般') + '</span>' +
       (g.count > 1 ? '<span class="tag tag--amber">同一诉求 ' + g.count + ' 次</span>' : '') +
