@@ -103,8 +103,14 @@
   }
 
   /* ---------------- 语音主流程 ---------------- */
+  let stuckTimer = null;
+  function clearStuck() {
+    if (stuckTimer) { clearTimeout(stuckTimer); stuckTimer = null; }
+  }
+
   function startListening() {
     inputSource = '语音';
+    clearStuck();
     setStage('listening');
     stateMain.textContent = '我在听，您慢慢说';
     stateSub.textContent = '说完了，再点一下这个圆';
@@ -118,15 +124,21 @@
         liveText.innerHTML = SY.escapeHtml(t) + '<span class="cursor"></span>';
       },
       onFinal(t) {
+        clearStuck();
         liveText.innerHTML = SY.escapeHtml(t);
         setStage('thinking');
         stateMain.textContent = '让我理一理…';
         stateSub.textContent = '正在帮您填好地址和联系人';
+        micBtn.querySelector('.lbl').textContent = '按一下 说话';
         setTimeout(() => buildConfirm(t, inputSource), 620);
       },
       onError(err) {
+        clearStuck();
         resetToIdle();
-        UI.toast('没有听清楚，我们再试一次', 'err');
+        const msg = (err && err.message) || '';
+        // 麦克风权限、打开方式、服务未启动这类问题要原样告知，不能一律糊成「没听清」
+        const envIssue = /麦克风|权限|浏览器|识别|连不上|服务|打开/.test(msg);
+        UI.toast(envIssue && msg ? msg : '没有听清楚，我们再试一次', 'err');
         console.warn(err);
       }
     });
@@ -140,7 +152,25 @@
 
   function stopListening() {
     if (autoTimer) { clearTimeout(autoTimer); autoTimer = null; }
-    if (listenSession) { listenSession.stop(); listenSession = null; }
+    if (!listenSession) return;
+    listenSession.stop();
+    listenSession = null;
+
+    // 点完立刻给反馈：识别要几秒，不能让人以为按钮坏了
+    if (stage === 'listening') {
+      setStage('thinking');
+      stateMain.textContent = '正在把您的话转成文字…';
+      stateSub.textContent = '稍等一下，马上就好';
+      micBtn.querySelector('.lbl').textContent = '正在认字…';
+    }
+
+    clearStuck();
+    stuckTimer = setTimeout(() => {
+      if (stage === 'thinking' && !confirmCtx) {
+        resetToIdle();
+        UI.toast('这次没听清（识别超时），您再说一遍试试', 'err');
+      }
+    }, 28000);
   }
 
   micBtn.addEventListener('click', () => {
@@ -556,7 +586,7 @@
         '<div class="ph">在这里写字</div></div>' +
         '<div class="hw-tools"><button class="link-btn" id="hwClear">擦掉重写</button>' +
         '<span class="grow"></span><span class="tag" id="hwBadge">笔画识别</span></div>' +
-        '<p class="hw-note">手写识别为预留接口，未配置识别服务时将以「原型演示」方式返回示例文字，配置方法见右上角「设置」。</p>' +
+        '<p class="hw-note">写完点「认一下」，由 DeepSeek 视觉模型辨认笔迹（需本机启动识别服务）。</p>' +
         '</div>',
       footer: '<button class="btn btn--ghost" data-close>取消</button><button class="btn btn--amber" id="hwGo">认一下</button>',
       onMount(api) {
@@ -613,7 +643,7 @@
           try {
             const res = await Speech.recognizeHandwriting(cv.toDataURL('image/png'));
             api.close();
-            if (res.simulated) UI.toast('原型演示：手写识别接口尚未配置', 'warn');
+            if (res.simulated) UI.toast('识别未接通，已改用示例文字：' + (res.error || ''), 'warn');
             setTimeout(() => buildConfirm(res.text, '手写'), 180);
           } catch (err) {
             btn.disabled = false; btn.textContent = '认一下';
@@ -694,9 +724,9 @@
         '<div class="h">手写识别服务</div>' +
         '<div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">' +
         '<div class="field"><label>识别服务地址</label>' +
-        '<input class="input" id="cfgHw" placeholder="https://your-ocr/api" value="' + (cfg.handwritingEndpoint || '') + '"></div>' +
+        '<input class="input" id="cfgHw" placeholder="http://localhost:8124/hw" value="' + (cfg.handwritingEndpoint || '') + '"></div>' +
         '<div class="field"><label>API Key</label>' +
-        '<input class="input" id="cfgHwKey" type="password" placeholder="可选" value="' + (cfg.handwritingKey || '') + '"></div>' +
+        '<input class="input" id="cfgHwKey" type="password" placeholder="留空即可，密钥在服务端" value="' + (cfg.handwritingKey || '') + '"></div>' +
         '</div></div>' +
 
         '<div class="set-sec">' +
